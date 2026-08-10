@@ -13,14 +13,13 @@ from winotify import Notification, audio
 
 CHECK_INTERVAL = 1 * 60  # 1 minutes
 
-# Add ONLY legitimate accounts that are allowed
-# to be members of "Remote Desktop Users".
+# Users that are allowed to remain in Remote Desktop Users.
 ALLOWED_USERS = {
     "Administrator",
-    # "AKIRA",
+    # "YourWindowsUsername",
 }
 
-LOG_FILE = r"D:\git\remove_remote_user\rdp_guard.log"
+LOG_FILE = "rdp_guard.log"
 
 
 # ============================================================
@@ -35,7 +34,7 @@ logging.basicConfig(
 
 
 # ============================================================
-# ADMIN CHECK
+# ADMINISTRATOR CHECK
 # ============================================================
 
 def is_admin():
@@ -98,7 +97,6 @@ def security_alert(username):
 def get_rdp_users():
 
     try:
-
         result = subprocess.run(
             [
                 "net",
@@ -108,20 +106,23 @@ def get_rdp_users():
             capture_output=True,
             text=True,
             encoding="utf-8",
-            errors="ignore"
+            errors="ignore",
+            timeout=30
         )
 
         if result.returncode != 0:
-
             logging.error(
                 "Failed to query Remote Desktop Users: %s",
-                result.stderr.strip()
+                result.stdout.strip()
             )
 
-            return []
+            print(
+                "[ERROR] Failed to query Remote Desktop Users."
+            )
+
+            return None
 
         users = []
-        started = False
 
         for line in result.stdout.splitlines():
 
@@ -130,40 +131,66 @@ def get_rdp_users():
             if not line:
                 continue
 
-            if line.startswith("---"):
-                started = True
+            # Skip headers/separators
+            if line.startswith("Alias name"):
                 continue
 
-            if not started:
+            if line.startswith("Comment"):
+                continue
+
+            if line.startswith("Members"):
+                continue
+
+            if line.startswith("---"):
                 continue
 
             if line.lower().startswith(
                 "the command completed successfully"
             ):
-                break
+                continue
 
             users.append(line)
 
         return users
 
+    except subprocess.TimeoutExpired:
+
+        logging.error(
+            "Timeout while checking Remote Desktop Users."
+        )
+
+        print(
+            "[ERROR] Windows command timed out."
+        )
+
+        return None
+
     except Exception as e:
 
         logging.exception(
-            "Error reading RDP users: %s",
+            "Unexpected error: %s",
             e
         )
 
-        return []
+        print(
+            f"[ERROR] {e}"
+        )
+
+        return None
 
 
 # ============================================================
-# REMOVE UNAUTHORIZED RDP USER
+# REMOVE USER
 # ============================================================
 
 def remove_rdp_user(username):
 
+    print(
+        f"[SECURITY] Unauthorized user detected: {username}"
+    )
+
     logging.warning(
-        "UNAUTHORIZED RDP USER DETECTED: %s",
+        "Unauthorized Remote Desktop user detected: %s",
         username
     )
 
@@ -183,80 +210,162 @@ def remove_rdp_user(username):
             capture_output=True,
             text=True,
             encoding="utf-8",
-            errors="ignore"
+            errors="ignore",
+            timeout=30
         )
 
         if result.returncode == 0:
 
-            logging.warning(
-                "Successfully removed unauthorized RDP user: %s",
-                username
+            print(
+                f"[SECURITY] Removed user: {username}"
             )
 
-            print(
-                f"[{datetime.now()}] Removed: {username}"
+            logging.warning(
+                "Removed unauthorized RDP user: %s",
+                username
             )
 
             return True
 
+        else:
+
+            print(
+                f"[ERROR] Could not remove: {username}"
+            )
+
+            logging.error(
+                "Failed to remove %s: %s",
+                username,
+                result.stdout.strip()
+            )
+
+            return False
+
+    except subprocess.TimeoutExpired:
+
+        print(
+            f"[ERROR] Timeout removing: {username}"
+        )
+
         logging.error(
-            "Failed to remove %s: %s",
-            username,
-            result.stdout.strip()
+            "Timeout removing user: %s",
+            username
         )
 
         return False
 
     except Exception as e:
 
+        print(
+            f"[ERROR] {e}"
+        )
+
         logging.exception(
-            "Exception removing user %s: %s",
-            username,
-            e
+            "Exception removing user %s",
+            username
         )
 
         return False
 
 
 # ============================================================
-# CHECK RDP USERS
+# CHECK USERS
 # ============================================================
 
 def check_rdp_users():
+
+    print()
     print(
-        f"[{datetime.now()}] Checking Remote Desktop Users..."
+        f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
+        "Checking Remote Desktop Users..."
+    )
+
+    logging.info(
+        "Starting Remote Desktop Users check."
     )
 
     users = get_rdp_users()
 
+    if users is None:
+        print(
+            "[WARNING] Could not complete this check."
+        )
+        return
+
     if not users:
+
+        print(
+            "[OK] No Remote Desktop Users found."
+        )
+
         logging.info(
             "No Remote Desktop Users found."
         )
-        print("No RDP users found.")
+
         return
 
+    print(
+        f"[INFO] Found {len(users)} RDP user(s):"
+    )
+
+    for username in users:
+
+        print(
+            f"       - {username}"
+        )
+
     logging.info(
-        "Current RDP users: %s",
+        "Current Remote Desktop Users: %s",
         users
     )
 
     for username in users:
 
+        # Convert DOMAIN\User to User
         clean_username = username.split("\\")[-1]
 
-        if clean_username not in ALLOWED_USERS:
-            remove_rdp_user(username)
+        if clean_username in ALLOWED_USERS:
 
-        else:
+            print(
+                f"[OK] Allowed user: {username}"
+            )
+
             logging.info(
                 "Allowed RDP user: %s",
                 username
             )
 
-            print(
-                f"Allowed RDP user: {username}"
-            )
+        else:
+
+            remove_rdp_user(username)
+
+
+# ============================================================
+# COUNTDOWN
+# ============================================================
+
+def countdown(seconds):
+
+    remaining = seconds
+
+    while remaining > 0:
+
+        minutes = remaining // 60
+        secs = remaining % 60
+
+        print(
+            f"\r[WAITING] Next check in "
+            f"{minutes:02d}:{secs:02d}",
+            end="",
+            flush=True
+        )
+
+        # Sleep for one second
+        time.sleep(1)
+
+        remaining -= 1
+
+    print()
 
 
 # ============================================================
@@ -265,48 +374,147 @@ def check_rdp_users():
 
 def main():
 
+    print("=" * 65)
+    print("        RDP USER SECURITY WATCHDOG")
+    print("=" * 65)
+    print()
+
     if not is_admin():
 
+        print(
+            "[ERROR] Administrator privileges are required."
+        )
+
         print()
-        print("=" * 70)
-        print("ERROR: Administrator privileges are required.")
-        print("=" * 70)
-        print()
-        print("Please open Command Prompt with:")
-        print("Run as administrator")
-        print()
+        print(
+            "Please run Command Prompt as Administrator."
+        )
+
+        logging.error(
+            "Program started without Administrator privileges."
+        )
+
+        input(
+            "\nPress Enter to exit..."
+        )
 
         return
 
-    print("=" * 70)
-    print("🛡️  RDP SECURITY GUARD")
-    print("=" * 70)
     print(
-        f"Check interval: {CHECK_INTERVAL // 60} minutes"
+        "[OK] Administrator privileges confirmed."
     )
+
     print(
-        "Allowed users:",
-        ", ".join(ALLOWED_USERS) if ALLOWED_USERS else "NONE"
+        f"[OK] Check interval: {CHECK_INTERVAL // 60} minutes"
     )
-    print("=" * 70)
+
+    if ALLOWED_USERS:
+
+        print(
+            "[OK] Allowed users:"
+        )
+
+        for user in ALLOWED_USERS:
+            print(
+                f"     - {user}"
+            )
+
+    else:
+
+        print(
+            "[WARNING] No users are allowed."
+        )
+
+    print()
+    print(
+        "Watchdog started."
+    )
+
+    print(
+        "Press Ctrl+C to stop."
+    )
 
     logging.info(
-        "RDP Security Guard started."
+        "RDP Guard started."
     )
 
-    # Check immediately
-    check_rdp_users()
+    # ========================================================
+    # MAIN LOOP
+    # ========================================================
+
+    cycle = 1
 
     while True:
 
-        time.sleep(CHECK_INTERVAL)
+        print()
+        print(
+            "=" * 65
+        )
 
-        check_rdp_users()
+        print(
+            f"CHECK CYCLE #{cycle}"
+        )
 
+        print(
+            "=" * 65
+        )
+
+        logging.info(
+            "Starting check cycle #%d",
+            cycle
+        )
+
+        try:
+
+            check_rdp_users()
+
+        except Exception as e:
+
+            print(
+                f"[ERROR] Check failed: {e}"
+            )
+
+            logging.exception(
+                "Check cycle failed."
+            )
+
+        print()
+        print(
+            "[OK] Check completed."
+        )
+
+        logging.info(
+            "Check cycle #%d completed.",
+            cycle
+        )
+
+        cycle += 1
+
+        print()
+        print(
+            "Waiting 1 minutes before the next check..."
+        )
+
+        countdown(CHECK_INTERVAL)
 
 # ============================================================
 # START
 # ============================================================
 
 if __name__ == "__main__":
-    main()
+
+    try:
+
+        main()
+
+    except KeyboardInterrupt:
+
+        print()
+        print()
+        print(
+            "[INFO] RDP Security Watchdog stopped."
+        )
+
+        logging.info(
+            "RDP Guard stopped by user."
+        )
