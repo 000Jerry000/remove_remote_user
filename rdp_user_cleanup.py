@@ -1,186 +1,257 @@
 import subprocess
 import time
 import logging
+import ctypes
 from datetime import datetime
-import os
 
-# Setup logging
-log_file = os.path.expanduser("~/rdp_cleanup.log")
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+CHECK_INTERVAL = 1 * 60  # 1 minutes
+
+# Accounts that are ALLOWED to remain in Remote Desktop Users.
+# Add your legitimate Windows username(s) here.
+ALLOWED_USERS = {
+    "Administrator",
+    "AKIRA",
+    # "YourWindowsUsername",
+}
+
+LOG_FILE = "rdp_guard.log"
+
+# ============================================================
+# LOGGING
+# ============================================================
+
 logging.basicConfig(
-  level=logging.INFO,
-  format='%(asctime)s - %(levelname)s - %(message)s',
-  handlers=[
-      logging.FileHandler(log_file),
-      logging.StreamHandler()
-  ]
+    filename=LOG_FILE,
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
 )
-logger = logging.getLogger(__name__)
 
-# Protected system accounts - DO NOT DELETE
-PROTECTED_USERS = {
-    'Administrator',
-    'Guest',
-    'DefaultAccount',
-    'WDAGUtilityAccount'
-}
 
-# Known legitimate RDP users (add your own accounts here)
-LEGITIMATE_USERS = {
-    # 'your_username',  # Uncomment and add your own usernames
-    
-}
+# ============================================================
+# ADMIN CHECK
+# ============================================================
 
-def get_local_users():
-    """Get list of all local users on the system"""
+def is_admin():
     try:
-        result = subprocess.run(
-            ['net', 'user'],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        
-        if result.returncode == 0:
-            lines = result.stdout.split('\n')
-            users = []
-            for line in lines:
-                line = line.strip()
-                # Skip headers and empty lines
-                if line and not line.startswith('---') and line != 'User accounts for' and '\\\\' not in line:
-                    # Users are listed, filter out the command output headers
-                    if line and not any(x in line for x in ['User accounts for', 'The command completed']):
-                        users.extend(line.split())
-            return [u for u in users if u]
-        else:
-            logger.error(f"Failed to get user list: {result.stderr}")
-            return []
-    except Exception as e:
-        logger.error(f"Error getting local users: {e}")
-        return []
+        return ctypes.windll.shell32.IsUserAnAdmin()
+    except Exception:
+        return False
+
+
+# ============================================================
+# GET REMOTE DESKTOP USERS
+# ============================================================
 
 def get_rdp_users():
-    """Get list of users in Remote Desktop Users group"""
+    """
+    Get members of the local 'Remote Desktop Users' group.
+    """
+
     try:
         result = subprocess.run(
-            ['net', 'localgroup', 'Remote Desktop Users'],
+            [
+                "net",
+                "localgroup",
+                "Remote Desktop Users"
+            ],
             capture_output=True,
             text=True,
-            timeout=10
+            encoding="utf-8",
+            errors="ignore"
         )
-        
-        if result.returncode == 0:
-            lines = result.stdout.split('\n')
-            rdp_users = []
-            capture = False
-            
-            for line in lines:
-                line = line.strip()
-                # Start capturing after the header
-                if '---' in line:
-                    capture = True
-                    continue
-                # Stop at command completion line
-                if 'The command completed' in line:
-                    break
-                # Capture user entries
-                if capture and line and not line.startswith('---'):
-                    rdp_users.append(line)
-            
-            return rdp_users
-        else:
-            logger.error(f"Failed to get RDP users: {result.stderr}")
+
+        if result.returncode != 0:
+            logging.error(
+                "Failed to query Remote Desktop Users: %s",
+                result.stderr.strip()
+            )
             return []
+
+        users = []
+
+        started = False
+
+        for line in result.stdout.splitlines():
+
+            line = line.strip()
+
+            if not line:
+                continue
+
+            # Start reading after this separator
+            if line.startswith("---"):
+                started = True
+                continue
+
+            if not started:
+                continue
+
+            # End of users
+            if line.lower().startswith(
+                "the command completed successfully"
+            ):
+                break
+
+            users.append(line)
+
+        return users
+
     except Exception as e:
-        logger.error(f"Error getting RDP users: {e}")
+        logging.exception("Error reading RDP users: %s", e)
         return []
 
-def remove_user_from_rdp_group(username):
-    """Remove a user from Remote Desktop Users group"""
+
+# ============================================================
+# REMOVE UNAUTHORIZED USER
+# ============================================================
+
+def remove_rdp_user(username):
+
+    logging.warning(
+        "Unauthorized Remote Desktop user detected: %s",
+        username
+    )
+
     try:
+
         result = subprocess.run(
-            ['net', 'localgroup', 'Remote Desktop Users', username, '/delete'],
+            [
+                "net",
+                "localgroup",
+                "Remote Desktop Users",
+                username,
+                "/delete"
+            ],
             capture_output=True,
             text=True,
-            timeout=10
+            encoding="utf-8",
+            errors="ignore"
         )
-        
+
         if result.returncode == 0:
-            logger.warning(f"REMOVED from RDP group: {username}")
+
+            logging.warning(
+                "Removed unauthorized RDP user: %s",
+                username
+            )
+
+            print(
+                f"[{datetime.now()}] Removed: {username}"
+            )
+
             return True
+
         else:
-            logger.error(f"Failed to remove {username} from RDP group: {result.stderr}")
+
+            logging.error(
+                "Failed to remove %s: %s",
+                username,
+                result.stdout.strip()
+            )
+
             return False
+
     except Exception as e:
-        logger.error(f"Error removing {username} from RDP: {e}")
+
+        logging.exception(
+            "Exception removing user %s: %s",
+            username,
+            e
+        )
+
         return False
 
-def delete_user_account(username):
-    """Delete a local user account"""
-    try:
-        result = subprocess.run(
-            ['net', 'user', username, '/delete'],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        
-        if result.returncode == 0:
-            logger.warning(f"DELETED user account: {username}")
-            return True
-        else:
-            logger.error(f"Failed to delete {username}: {result.stderr}")
-            return False
-    except Exception as e:
-        logger.error(f"Error deleting {username}: {e}")
-        return False
 
-def cleanup_cycle():
-    """Main cleanup cycle"""
-    logger.info("=" * 60)
-    logger.info("Starting RDP user cleanup cycle")
-    logger.info("=" * 60)
-    
-    rdp_users = get_rdp_users()
-    logger.info(f"Found {len(rdp_users)} RDP users: {rdp_users}")
-    
-    removed_count = 0
-    
-    for user in rdp_users:
-        # Skip protected and legitimate users
-        if user in PROTECTED_USERS or user in LEGITIMATE_USERS:
-            logger.info(f"SKIPPED (protected/legitimate): {user}")
-            continue
-        
-        # Remove from RDP group first
-        if remove_user_from_rdp_group(user):
-            removed_count += 1
-            
-            # Optionally delete the account entirely
-            # Uncomment the line below if you want to delete the entire account
-            # delete_user_account(user)
-    
-    logger.info(f"Cleanup cycle complete. Removed {removed_count} unauthorized users.")
-    logger.info("=" * 60)
-    logger.info("")
+# ============================================================
+# SECURITY CHECK
+# ============================================================
+
+def check_rdp_users():
+
+    users = get_rdp_users()
+
+    if not users:
+        logging.info(
+            "No Remote Desktop Users found."
+        )
+        return
+
+    logging.info(
+        "Current Remote Desktop Users: %s",
+        users
+    )
+
+    for username in users:
+
+        # Remove domain prefix if present:
+        # DOMAIN\username -> username
+        clean_username = username.split("\\")[-1]
+
+        if clean_username not in ALLOWED_USERS:
+            remove_rdp_user(username)
+
+        else:
+            logging.info(
+                "Allowed RDP user: %s",
+                username
+            )
+
+
+# ============================================================
+# MAIN WATCHDOG
+# ============================================================
 
 def main():
-    """Main loop - runs cleanup every 15 minutes"""
-    logger.info("RDP User Cleanup Bot started")
-    logger.info("Cycle interval: 1 minutes")
-    logger.info("Log file: " + log_file)
-    logger.info("")
-    
-    cycle_interval = 1 * 60  # 15 minutes in seconds
-    
-    try:
-        while True:
-            cleanup_cycle()
-            logger.info(f"Next cleanup in 1 minutes ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
-            time.sleep(cycle_interval)
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
-    except Exception as e:
-        logger.error(f"Unexpected error in main loop: {e}")
+
+    if not is_admin():
+
+        print(
+            "ERROR: This program must be run as Administrator."
+        )
+
+        logging.error(
+            "Program was not started with administrator privileges."
+        )
+
+        return
+
+    print("=" * 60)
+    print("RDP USER SECURITY WATCHDOG")
+    print("=" * 60)
+
+    print(
+        f"Checking every {CHECK_INTERVAL // 60} minutes."
+    )
+
+    print(
+        f"Allowed users: {', '.join(ALLOWED_USERS)}"
+    )
+
+    logging.info(
+        "RDP Guard started."
+    )
+
+    # First check immediately
+    check_rdp_users()
+
+    while True:
+
+        time.sleep(CHECK_INTERVAL)
+
+        logging.info(
+            "Running scheduled RDP user check."
+        )
+
+        check_rdp_users()
+
+
+# ============================================================
+# START
+# ============================================================
 
 if __name__ == "__main__":
     main()
