@@ -11,7 +11,7 @@ from winotify import Notification, audio
 # CONFIGURATION
 # ============================================================
 
-CHECK_INTERVAL = 15 * 60  # 15 minutes
+CHECK_INTERVAL = 1 * 60  # 1 minutes
 
 # Add ONLY legitimate accounts that are allowed
 # to be members of "Remote Desktop Users".

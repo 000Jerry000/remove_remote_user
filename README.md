@@ -2,7 +2,7 @@
 
 A lightweight Python security watchdog for Windows that periodically checks the **Remote Desktop Users** local group and removes unauthorized accounts.
 
-The default check interval is **15 minutes**.
+The default check interval is **1 minutes**.
 
 > **Important:** This tool is intended as a defensive measure. If an unknown account is repeatedly recreated, the underlying malware or persistence mechanism should be investigated and removed. This script should not be considered a replacement for antivirus or a full system cleanup.
 
@@ -11,7 +11,7 @@ The default check interval is **15 minutes**.
 ## Features
 
 * Checks the Windows `Remote Desktop Users` group.
-* Runs automatically every 15 minutes.
+* Runs automatically every 1 minutes.
 * Removes accounts that are not in the configured allowlist.
 * Keeps specified legitimate users untouched.
 * Records activity in a log file.
@@ -106,13 +106,13 @@ This causes every member of `Remote Desktop Users` to be removed.
 The default interval is:
 
 ```python
-CHECK_INTERVAL = 15 * 60
+CHECK_INTERVAL = 1 * 60
 ```
 
 This means:
 
 ```text
-15 minutes × 60 seconds = 900 seconds
+1 minutes × 60 seconds = 900 seconds
 ```
 
 To check every 5 minutes:
@@ -278,13 +278,13 @@ You should see:
 ============================================================
 RDP USER SECURITY WATCHDOG
 ============================================================
-Checking every 15 minutes.
+Checking every 1 minutes.
 Allowed users: Masao
 ```
 
 The first security check happens immediately.
 
-After that, the program waits 15 minutes and checks again.
+After that, the program waits 1 minutes and checks again.
 
 ---
 
@@ -319,7 +319,7 @@ The watchdog follows this cycle:
           Write log
                 │
                 ▼
-          Wait 15 minutes
+          Wait 1 minutes
                 │
                 └──────────► Repeat
 ```
